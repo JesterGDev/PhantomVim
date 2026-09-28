@@ -12,13 +12,16 @@ local function detect_provider()
   return "ollama"
 end
 
+-- opencode chat panel: the real opencode TUI docked on the right. The Esc
+-- fix keeps `Esc` inside opencode (the default snacks double-<Esc> mapping
+-- steals focus mid-typing and throws the cursor out of the message box).
 local function opencode_toggle()
   local bin = vim.fn.exepath("opencode")
   if bin == "" then
     require("snacks").notify.warn("opencode CLI not found on PATH")
     return
   end
-  require("snacks").terminal.toggle(bin, {
+  require("snacks").terminal.toggle({ bin, "--port", "34829" }, {
     cwd = LazyVim.root(),
     env = { TERM = "xterm-256color" },
     win = {
@@ -28,17 +31,89 @@ local function opencode_toggle()
       wo = { winbar = "%#P5Title# OPENCODE %#P5TitleBar#│ REPLICATING HEARTS %*" },
     },
   })
+  vim.defer_fn(function()
+    local ok, cur = pcall(vim.api.nvim_get_current_buf)
+    if ok and vim.api.nvim_buf_get_name(cur):match("opencode") then
+      pcall(vim.api.nvim_buf_del_keymap, cur, "t", "<Esc>")
+    end
+  end, 60)
 end
 
 return {
   { import = "lazyvim.plugins.extras.ai.avante" },
 
-  -- opencode lives on the right side of the editor
+  -- opencode.nvim: makes opencode editor-aware INSIDE nvim. Chat prompts get
+  -- buffer/selection context (@this, @buffer, ...), edits come back as nvim
+  -- :diffpatch you accept/reject, and opencode can drive nvim via its MCP
+  -- server (open files, jump to locations). The chat TUI still lives in the
+  -- right panel; the plugin connects to it by URL.
+  {
+    "nickjvandyke/opencode.nvim",
+    version = "*", -- pinned: our opencode CLI is v1 (main branch targets v2)
+    dependencies = { "folke/snacks.nvim" },
+    priority = 70,
+    -- all keymaps are registered in config() below: lazy.nvim's `keys`
+    -- retrofit resolves <leader> inconsistently, so we (a) load eagerly and
+    -- (b) let nvim resolve <leader> at map time (mapleader is set to " ").
+    opts = function()
+      vim.g.opencode_opts = {
+        server = {
+          -- open the (already P5-styled) chat panel when a server is needed
+          start = opencode_toggle,
+          -- fixed port (avoids requiring `lsof` for process discovery); the
+          -- toggle spawns `opencode --port 34829`, so the URL is known
+          url = "http://127.0.0.1:34829",
+        },
+        -- ask()/select() are the "editor-aware" entry points: they read the
+        -- current buffer/selection and hand it to a fresh opencode session.
+        autostart = false,
+      }
+    end,
+    config = function(_, opts)
+      vim.g.opencode_opts = vim.tbl_deep_extend("force", vim.g.opencode_opts or {}, opts)
+      vim.keymap.set("n", "<leader>oa", opencode_toggle, { desc = "OpenCode chat (right panel)" })
+      vim.keymap.set("n", "<leader>oq", function()
+        require("opencode").ask()
+      end, { desc = "Ask OpenCode" })
+      vim.keymap.set("n", "<leader>os", function()
+        require("opencode").select()
+      end, { desc = "Select an OpenCode prompt/action" })
+      vim.keymap.set("n", "<S-C-u>", function() require("opencode").command("session.half.page.up") end, { desc = "Scroll OpenCode up" })
+      vim.keymap.set("n", "<S-C-d>", function() require("opencode").command("session.half.page.down") end, { desc = "Scroll OpenCode down" })
+      -- editor-aware range/line operators: go{a} sends the motion range, goo sends the line
+      vim.keymap.set({ "n", "x" }, "go", function()
+        return require("opencode").operator("@this")
+      end, { expr = true, desc = "Send range to OpenCode" })
+      vim.keymap.set({ "n" }, "goo", function()
+        return require("opencode").operator("@this") .. "_"
+      end, { expr = true, desc = "Send line to OpenCode" })
+    end,
+  },
+
+  -- snacks integration: vim-native prompt input + action picker for opencode
   {
     "folke/snacks.nvim",
-    keys = {
-      { "<leader>oa", opencode_toggle, desc = "OpenCode AI (right panel)" },
-    },
+    opts = function(_, opts)
+      opts.input = opts.input or {}
+      opts.picker = opts.picker or {}
+      opts.picker.actions = vim.tbl_deep_extend("force", opts.picker.actions or {}, {
+        opencode_send = function(picker)
+          local items = vim.tbl_map(function(item)
+            if item.file then
+              return require("opencode").format({ path = item.file, from = item.pos, to = item.end_pos })
+            end
+            return item.text
+          end, picker:selected({ fallback = true }))
+          require("opencode").prompt(table.concat(items, ", ") .. " ")
+        end,
+      })
+      opts.picker.win = opts.picker.win or {}
+      opts.picker.win.input = opts.picker.win.input or {}
+      opts.picker.win.input.keys = vim.tbl_deep_extend("force", opts.picker.win.input.keys or {}, {
+        ["<a-o>"] = { "opencode_send", mode = { "n", "i" } },
+      })
+      return opts
+    end,
   },
 
   -- avante: docked right, P5-styled, provider auto-detected from env
