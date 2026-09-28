@@ -1,0 +1,12 @@
+{
+  "extras": [
+    "lazyvim.plugins.extras.editor.neo-tree",
+    "lazyvim.plugins.extras.ui.edgy",
+    "lazyvim.plugins.extras.ai.avante"
+  ],
+  "install_version": 8,
+  "news": {
+    "NEWS.md": "10960"
+  },
+  "version": 8
+}
