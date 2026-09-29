@@ -96,13 +96,10 @@ vim.schedule(function()
 end)
 
 vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout", "BufEnter" }, {
-  callback = function()
-    vim.schedule(phantom.maybe_show_guide_on_empty)
-  end,
-})
-vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout", "BufEnter" }, {
-  callback = function()
-    vim.schedule(phantom.maybe_show_guide_on_empty)
+  callback = function(ev)
+    vim.schedule(function()
+      phantom.maybe_show_guide_on_empty(ev)
+    end)
   end,
 })
 

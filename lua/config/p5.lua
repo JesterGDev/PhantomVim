@@ -24,6 +24,7 @@ function M.highlights()
 
   -- window titles (winbar / panel headers)
   hl(0, "P5Title", { fg = c.dark, bg = c.red, bold = true })
+  hl(0, "P5TitleRed", { fg = c.red, bg = c.dark, bold = true })
   hl(0, "P5TitleGold", { fg = c.dark, bg = c.gold, bold = true })
   hl(0, "P5TitleBar", { fg = c.lfg, bg = c.dark })
 

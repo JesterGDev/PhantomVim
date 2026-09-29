@@ -17,6 +17,7 @@ local M = {}
 local DIR = vim.fn.stdpath("state") .. "/phantom"
 local CWD_FILE = DIR .. "/cwd.txt"
 local OPEN_FILE = DIR .. "/open.txt"
+local LOCK_FILE = DIR .. "/poller.lock"
 local RCFILE = DIR .. "/termrc"
 
 local p5 = require("config.p5")
@@ -67,6 +68,10 @@ end
 ---@param zone "explorer"|"terminal"|"ai"|"editor"
 function M.zone_focus(zone)
   local wins = zone_windows(zone)
+  if #wins == 0 and zone == "editor" then
+    -- the Guide lives in the editor area, so it doubles as a focus target
+    wins = zone_windows("guide")
+  end
   if #wins > 0 then
     vim.api.nvim_set_current_win(wins[#wins])
     return
@@ -87,7 +92,7 @@ end
 ---Toggle the terminal controller (bash + PhantomVim rc so every prompt syncs
 ---PWD and `n file` / `nvim file` opens in the editor instead of nesting).
 function M.terminal_toggle()
-  require("snacks").terminal.toggle(get_term_cmd(), {
+  require("snacks").terminal.toggle(M.get_term_cmd(), {
     cwd = vim.uv.cwd() or vim.fn.getcwd(),
     env = {
       TERM = "xterm-256color",
@@ -163,6 +168,21 @@ local function tree_re_root(dir)
 end
 
 ---@private
+---A window able to host a file: a real editor window, or the Guide's window
+---(it lives in the editor area), or nil.
+local function editor_window()
+  local editors = zone_windows("editor")
+  if #editors > 0 then
+    return editors[#editors]
+  end
+  local guides = zone_windows("guide")
+  if #guides > 0 then
+    return guides[#guides]
+  end
+  return nil
+end
+
+---@private
 ---Open a path (file or directory) in the central editor window.
 ---@param path string
 local function open_path_in_editor(path)
@@ -175,23 +195,40 @@ local function open_path_in_editor(path)
     require("snacks").notify.warn("Can't open: " .. path)
     return
   end
-  local wins = zone_windows("editor")
-  if #wins > 0 then
-    vim.api.nvim_set_current_win(wins[1])
-  end
-  if stat.type == "directory" then
-    vim.schedule(function()
+  local is_dir = stat.type == "directory"
+  vim.schedule(function()
+    -- NEVER :edit the terminal/explorer/AI panes: pick a safe editor window
+    -- first, and only if there is none, split one above the bottom panes.
+    local win = editor_window()
+    if not win then
+      local anchor = nil
+      for _, z in ipairs({ "terminal", "ai", "explorer" }) do
+        local ws = zone_windows(z)
+        if #ws > 0 then
+          anchor = ws[#ws]
+          break
+        end
+      end
+      if anchor and vim.api.nvim_win_is_valid(anchor) then
+        local tmp = vim.api.nvim_create_buf(true, false)
+        win = vim.api.nvim_open_win(tmp, true, { split = "above", win = anchor })
+      else
+        win = vim.api.nvim_get_current_win()
+      end
+    end
+    if vim.api.nvim_win_is_valid(win) then
+      vim.api.nvim_set_current_win(win)
+    end
+    if is_dir then
       vim.fn.chdir(path)
       tree_re_root(path)
-    end)
-  else
-    vim.schedule(function()
+    else
       vim.cmd("edit " .. vim.fn.fnameescape(path))
       pcall(function()
         require("neo-tree.command").execute({ action = "reveal", source = "filesystem" })
       end)
-    end)
-  end
+    end
+  end)
 end
 
 ---@private
@@ -240,6 +277,14 @@ function M.on_directory_changed()
   vim.api.nvim_exec_autocmds("User", { pattern = "PhantomDirChanged", modeline = false })
 end
 
+-- Keep the left explorer in step with whatever `cd` the controller terminal
+-- just issued (the poller's :chdir fires this event).
+vim.api.nvim_create_autocmd("DirChanged", {
+  callback = function()
+    vim.schedule(M.on_directory_changed)
+  end,
+})
+
 ---@private
 local timer
 
@@ -254,7 +299,85 @@ function M.tick()
   end
 end
 
----Start the PhantomVim sync loop (called once on startup).
+---@private
+---Is any actual Phantom pane (terminal/explorer/AI) on screen?
+local function pane_visible()
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    local zone = zone_of_buffer(vim.api.nvim_win_get_buf(w))
+    if zone == "terminal" or zone == "ai" or zone == "explorer" then
+      return true
+    end
+  end
+  return false
+end
+
+---@private
+---Refuse the sync lock if a live *other* process owns it, so stray/headless
+---nvim instances can never steal the poll from the real session.
+---@return boolean
+local function acquire_lock()
+  local f = io.open(LOCK_FILE, "r")
+  if f then
+    local pid = tonumber((f:read("*a") or ""):match("%d+"))
+    f:close()
+    if pid and pid ~= vim.fn.getpid() then
+      local alive = vim.uv.kill(pid, 0)
+      if alive then
+        return false
+      end
+    end
+  end
+  local w = io.open(LOCK_FILE, "w")
+  if w then
+    w:write(tostring(vim.fn.getpid()))
+    w:close()
+  end
+  return true
+end
+
+---@private
+local function release_lock()
+  local f = io.open(LOCK_FILE, "r")
+  if f then
+    local pid = tonumber((f:read("*a") or ""):match("%d+"))
+    f:close()
+    if pid == vim.fn.getpid() then
+      os.remove(LOCK_FILE)
+    end
+  end
+end
+
+vim.api.nvim_create_autocmd("VimLeavePre", { callback = release_lock })
+
+---@private
+---Start the foreground sync loop, but only once a Phantom pane exists and only
+---if no other live process is already polling. Headless/stray nvim instances
+---(experiments, `nvim --embed` agents, test harnesses) must never steal the
+---poll from the real session, so a visible UI is required unless the test
+---harness explicitly opts in with `vim.g.phantom_force_poller = true`.
+local function ensure_poller()
+  if timer then
+    return
+  end
+  if not pane_visible() then
+    return
+  end
+  if not vim.g.phantom_force_poller and #vim.api.nvim_list_uis() == 0 then
+    return
+  end
+  if not acquire_lock() then
+    return
+  end
+  timer = (vim.uv).new_timer()
+  timer:start(500, 1000, vim.schedule_wrap(M.tick))
+end
+
+---Test hook: is this process currently running the foreground poller?
+function M._poller_active()
+  return timer ~= nil
+end
+
+---Start the sync machinery (also re-kicked when a Phantom pane appears).
 local did_start = false
 function M.start()
   if did_start then
@@ -263,9 +386,17 @@ function M.start()
   did_start = true
   ensure_dir()
   write_rc()
-  timer = timer or (vim.uv).new_timer()
-  timer:start(500, 1000, vim.schedule_wrap(M.tick))
+  ensure_poller()
 end
+
+-- A pane appearing later (or a win focus change) must start the poller even if
+-- start() ran before any controller window existed (e.g. `nvim --embed` or a
+-- bare headless load that never builds a Phantom IDE).
+vim.api.nvim_create_autocmd({ "WinEnter", "BufEnter" }, {
+  callback = function()
+    vim.schedule(ensure_poller)
+  end,
+})
 
 ---Escape '%' so shell paths can't break winbar expansion.
 ---@param s string
@@ -357,10 +488,10 @@ function M.guide_lines()
   h("", nil)
   h("-- ZONES (focus any pane from anywhere, mouseless) --", "P5BannerDim")
   kv("<F1> / ,,", "Keymap Guide (this screen, anywhere, anytime)")
-  kv("<A-h>", "focus EXPLORER                      <F2>")
-  kv("<A-j>", "focus TERMINAL (controller)         <F3>")
-  kv("<A-k>", "focus EDITOR                        <F4>")
-  kv("<A-l>", "focus AI CHAT")
+  kv("<A-1>/<F3>", "focus TERMINAL (controller)")
+  kv("<A-2>", "focus EDITOR")
+  kv("<A-3>/<F4>", "focus AI CHAT")
+  kv("<A-h>/<F2>", "focus EXPLORER          <A-j/k/l>  also focus terminal/editor/AI")
   kv("<A-Up/Down/Left/Right>", "resize the focused window")
   h("", nil)
   h("-- TERMINAL-FIRST CONTROLLER --", "P5BannerDim")
@@ -410,6 +541,30 @@ end
 
 ---Show the PhantomVim Guide (default screen + <F1>/`,,`).
 function M.show_guide()
+  -- already on screen somewhere? re-render it and focus the window, never
+  -- spawn a second guide window next to the first one.
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    local b = vim.api.nvim_win_get_buf(w)
+    if vim.api.nvim_buf_is_valid(b) and vim.api.nvim_buf_is_loaded(b) and vim.bo[b].filetype == "phantomguide" then
+      local existing = b
+      vim.bo[existing].modifiable = true
+      local lines = M.guide_lines()
+      local texts = vim.iter(lines):map(function(l) return l.text end):totable()
+      vim.api.nvim_buf_set_lines(existing, 0, -1, false, texts)
+      vim.api.nvim_buf_clear_namespace(existing, -1, 0, -1)
+      vim.api.nvim_set_hl(0, "PhantomGuideBg", { link = "Normal" })
+      vim.api.nvim_buf_add_highlight(existing, -1, "PhantomGuideBg", 0, 0, -1)
+      for i, l in ipairs(lines) do
+        if type(l.hl) == "string" and l.hl ~= "None" then
+          vim.api.nvim_buf_add_highlight(existing, -1, l.hl, i - 1, 0, -1)
+        end
+      end
+      vim.bo[existing].modifiable = false
+      vim.api.nvim_set_current_win(w)
+      return
+    end
+  end
+
   local target_buf = nil
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
     if vim.bo[buf].filetype == "phantomguide" and vim.api.nvim_buf_is_loaded(buf) then
@@ -418,9 +573,13 @@ function M.show_guide()
     end
   end
   target_buf = target_buf or vim.api.nvim_create_buf(true, false)
-  pcall(vim.api.nvim_buf_set_name, target_buf, "Phantom Guide")
+  -- the Guide must never look/act like an on-disk file: no swap file, no
+  -- recovery prompt, and it gets wiped (not hidden) so it can't linger.
+  pcall(vim.api.nvim_buf_set_name, target_buf, "")
+  vim.bo[target_buf].buftype = "nofile"
+  vim.bo[target_buf].swapfile = false
   vim.bo[target_buf].filetype = "phantomguide"
-  vim.bo[target_buf].bufhidden = "hide"
+  vim.bo[target_buf].bufhidden = "wipe"
   vim.bo[target_buf].modifiable = true
   local lines = M.guide_lines()
   local texts = vim.iter(lines):map(function(l) return l.text end):totable()
@@ -440,16 +599,52 @@ function M.show_guide()
   vim.api.nvim_buf_set_keymap(target_buf, "n", "<C-o>", "<cmd>hide<CR>", { noremap = true, silent = true, desc = "Close guide" })
 
   local wins = zone_windows("editor")
-  local win = #wins > 0 and wins[1] or vim.api.nvim_get_current_win()
+  local win = nil
+  if #wins > 0 then
+    win = wins[1]
+  else
+    -- no plain editor window: split one above the last fixed-zone window so the
+    -- terminal/explorer/AI panes are never hijacked by the Guide
+    local zones = { "terminal", "explorer", "ai" }
+    local anchor = nil
+    for _, z in ipairs(zones) do
+      local ws = zone_windows(z)
+      if #ws > 0 then
+        anchor = ws[#ws]
+        break
+      end
+    end
+    if anchor and vim.api.nvim_win_is_valid(anchor) then
+      win = vim.api.nvim_open_win(target_buf, true, { split = "above", win = anchor })
+    else
+      win = vim.api.nvim_get_current_win()
+    end
+  end
   if vim.api.nvim_win_is_valid(win) then
-    vim.api.nvim_set_current_buf(target_buf)
-    vim.api.nvim_set_current_win(win)
     vim.api.nvim_win_set_buf(win, target_buf)
+    vim.api.nvim_set_current_win(win)
   end
 end
 
 ---Bring the Guide back whenever all real content buffers have been closed.
-function M.maybe_show_guide_on_empty()
+---The event buffer param is used to keep the fixed panes out of the loop:
+---opening/focusing a terminal, explorer or AI pane must never re-spawn the
+---Guide (that produced stacks of guide windows before).
+---@param ev? table Autocmd event (has `.match` = buffer number)
+function M.maybe_show_guide_on_empty(ev)
+  -- never pile up: if any window already shows the Guide, leave it alone
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    local b = vim.api.nvim_win_get_buf(w)
+    if vim.api.nvim_buf_is_valid(b) and vim.api.nvim_buf_is_loaded(b) and vim.bo[b].filetype == "phantomguide" then
+      return
+    end
+  end
+  if ev and type(ev.buf) == "number" and ev.buf ~= 0 and vim.api.nvim_buf_is_valid(ev.buf) then
+    local zone = zone_of_buffer(ev.buf)
+    if zone ~= "editor" and zone ~= "guide" then
+      return
+    end
+  end
   local has_real = false
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
     if vim.api.nvim_buf_is_valid(buf) and vim.api.nvim_buf_is_loaded(buf) then
@@ -477,6 +672,13 @@ function M.setup_keymaps()
 
   local zones = { h = "explorer", j = "terminal", k = "editor", l = "ai" }
   for key, zone in pairs(zones) do
+    vim.keymap.set("n", "<A-" .. key .. ">", function() M.zone_focus(zone) end, { desc = "Focus " .. zone })
+    vim.keymap.set("t", "<A-" .. key .. ">", "<C-\\><C-n><cmd>lua require('config.phantom').zone_focus('" .. zone .. "')<CR>", { desc = "Focus " .. zone })
+  end
+  -- one-hand digit layer (mirrors <F1>/<F2>/<F3>/<F4>): A-1 terminal, A-2
+  -- editor, A-3 AI; the explorer keeps <A-h>/<F2>. Works from any mode.
+  local digits = { ["1"] = "terminal", ["2"] = "editor", ["3"] = "ai" }
+  for key, zone in pairs(digits) do
     vim.keymap.set("n", "<A-" .. key .. ">", function() M.zone_focus(zone) end, { desc = "Focus " .. zone })
     vim.keymap.set("t", "<A-" .. key .. ">", "<C-\\><C-n><cmd>lua require('config.phantom').zone_focus('" .. zone .. "')<CR>", { desc = "Focus " .. zone })
   end
