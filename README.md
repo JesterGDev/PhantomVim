@@ -6,15 +6,11 @@ A Persona 5–inspired, Cursor-style **Neovim IDE distribution** built on [LazyV
 ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
 PHANTOM·THIEVES // CODING LEAP
 GIMME YOUR CODE
-▸ <space> e      EXPLORER
-▸ <space> oa     OPENCODE AI
-▸ <space> oq     ASK OPENCODE
-▸ <space> os     OPENCODE ACTIONS
-▸ <space> ot     TERMINAL
-▸ <space> aa     AVANTE
-▸ <space> ac     AVANTE CHAT
-▸ <space> am     SELECT MODEL
-▸ <space> ol     REASSEMBLE LAYOUT
+▸ ,e / <a-h>  EXPLORER           ▸ ,os  OPENCODE ACTIONS
+▸ ,oa / <f4>  OPENCODE AI        ▸ ,ot / <f3>  TERMINAL CONTROLLER
+▸ ,oq         ASK OPENCODE       ▸ ,ol  REASSEMBLE LAYOUT
+▸ ,, / <f1>   KEYBINDING GUIDE   ▸ <a-l> AI   <a-j> EDITOR   <a-k> GUIDE
+▸ ,aa / ,ac   AVANTE CHAT        ▸ n <file> / nvim <file>  OPEN IN EDITOR
 ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
 ```
 
@@ -22,12 +18,22 @@ Sharp red-on-black, hard edges, all-out attack — PhantomVim turns your editor 
 "Employee" workstation: **files on the left, code in the middle, AI on the right,
 terminal at the bottom.**
 
+## PhantomVim is terminal-first
+
+The **bottom terminal is the controller**. Whatever directory you `cd` into there is
+instantly followed by the file explorer and the AI panel; open a file from the shell
+with `n <file>` (or `nvim <file>`) and it opens in the editor above, with its path in
+the window's title bar. Works entirely in one hand on the keyboard — no mouse.
+
 ## Features
 
-- **Employee-style layout** — file explorer (neo-tree) left, editor center, opencode AI panel right, terminal bottom. Reassemble it any time with `<space>ol`.
+- **Terminal-first, mouseless** — the bottom terminal drives everything: `cd` anywhere and the explorer + AI follow; `n <file>` / `nvim <file>` opens files in the editor above (`~/.config/nvim/lua/config/phantom.lua`).
+- **Employee-style layout** — file explorer (neo-tree) left, editor center, opencode AI panel right, terminal bottom. Reassemble it any time with `,ol`.
+- **On-screen keybinding Guide** — no messy start-screen: fresh sessions show a living PhantomVim Guide (`F1` / `,,`) that lists every zone shortcut, terminal commands and a live dump of all your keymaps. It returns automatically whenever all buffers are closed.
+- **No Space bar hostage** — the leader is `,`, so you never fight LazyVim's `<space>` prefixes while typing; quick zone jumps are one key: `<F1>` guide, `<F2>` explorer, `<F3>` terminal, `<F4>` AI.
 - **Built-in AI** — the right panel runs the real [opencode](https://opencode.ai) TUI docked inside Vim, wired to your editor via [opencode.nvim](https://github.com/nickjvandyke/opencode.nvim): prompts carry your buffer/selection context, and edits come back as accept/reject `:diffpatch`. Ships with opencode's free cloud models — **no accounts, no API keys, no login**.
 - **Phantom Thieves theme** — a full `phantom-thieves` colorscheme, P5-laced lualine statusline, bufferline tabs, and double-bordered noice command palette.
-- **avante.nvim** — optional chat/inline-edit sidekick with native Rust core (`<space>aa`, `<space>ac`, `<space>ae`, ...).
+- **avante.nvim** — optional chat/inline-edit sidekick with native Rust core (`,aa`, `,ac`, `,ae`, ...).
 - Everything else LazyVim gives you: fuzzy finder, LSP, git integration, sessions, 100+ prepackaged plugins.
 
 ## Requirements
@@ -54,7 +60,7 @@ restart (or with `<space>pr` → `Lazy reload`).
 nvim --headless "+Lazy! update" +qa
 ```
 
-## AI setup (`<space>oa`)
+## AI setup (`,oa`)
 
 The right panel is the opencode TUI, connected to nvim as an editor-aware server
 (opencode.nvim talks to it on `127.0.0.1:34829`). Free models are available immediately —
@@ -67,9 +73,9 @@ Optional, for stronger models: `opencode auth login` once and pick a provider.
 
 ### Editor-aware commands
 
-- `<space>oa` — open/close the AI panel
-- `<space>oq` — ask opencode with the current buffer/selection as context (`@this`)
-- `<space>os` — pick an action via the fuzzy picker (`<a-o>` sends the selection to opencode)
+- `,oa` — open/close the AI panel
+- `,oq` — ask opencode with the current buffer/selection as context (`@this`)
+- `,os` — pick an action via the fuzzy picker (`<a-o>` sends the selection to opencode)
 - `go<movement>` (visual/normal, e.g. `goip`) — send the covered text range to opencode
 - `goo` — send the current line
 - `<S-C-u>` / `<S-C-d>` — scroll the AI session up/down
@@ -86,30 +92,57 @@ avante uses **its own** provider, not opencode's free tier:
 If `cargo` is installed, `:Lazy sync` also builds avante's native Rust core
 (tokenizers, html2md, repo-map). Without it, avante still works in pure-Lua mode.
 
+## Using the terminal controller
+
+The bottom terminal is the control room:
+
+- `cd <dir>` — the explorer reroots to that dir and the AI panel starts following it
+- `n <file>` — open the file in the editor above (takes multiple files; `n -` follows with `open.txt`)
+- `nvim <file>` / `vim <file>` / `vi <file>` — same, opened in the editor (never nested)
+- any other shell command works as usual (`git`, `ls`, `rg`, ...)
+
+The editor window's title bar always shows the current file's path.
+
+## Zones: one key to every pane
+
+| Zone | Keys |
+|---|---|
+| Guide | `<F1>`, `,,` |
+| Explorer | `<F2>`, `,e`, `<a-h>` |
+| Editor | `<a-j>` |
+| Terminal controller | `<F3>`, `,ot`, `<a-k>` |
+| AI panel | `<F4>`, `,oa`, `<a-l>` |
+
+Resize panes with `<a-↑>/<a-↓>/<a-←>/<a-→>`.
+
 ## Keymaps
 
 | Keys | What it does |
 |---|---|
-| `<space>oa` | AI panel (opencode) |
-| `<space>oq` | Ask opencode (buffer/selection context) |
-| `<space>os` | Pick an opencode action |
+| `,oa` | AI panel (opencode) |
+| `,oq` | Ask opencode (buffer/selection context) |
+| `,os` | Pick an opencode action |
 | `go` / `goo` | Send range / line to opencode |
-| `<space>ot` | Bottom terminal |
-| `<space>e` | File explorer |
-| `<space>ol` | Rebuild the IDE layout |
-| `<space>ff` | Find files (fuzzy) |
-| `<space>fr` | Recent files |
-| `<space>fb` | Open buffers |
-| `<space>fw` | Grep word under cursor |
+| `,ot` | Bottom terminal controller |
+| `,e` | File explorer |
+| `,ol` | Rebuild the IDE layout |
+| `,,` / `<F1>` | PhantomVim keybinding Guide |
+| `<F2>` / `<F3>` / `<F4>` | Explorer / terminal / AI |
+| `<a-hjkl>` | Jump between explorer / editor / terminal / AI |
+| `,ff` | Find files (fuzzy) |
+| `,fr` | Recent files |
+| `,fb` | Open buffers |
+| `,fw` | Grep word under cursor |
 | `]b` / `[b` | Next / prev buffer |
-| `<space>ca` | LSP code action |
+| `,ca` | LSP code action |
 | `gd` | Go to definition |
 | `K` | Hover docs |
-| `<space>gs` | Git status |
-| `<space>gg` | LazyGit |
-| `<space>aa/ac/ae/am/at` | Avante: ask / chat / edit / model / toggle |
+| `,gs` | Git status |
+| `,gg` | LazyGit |
+| `,aa/ac/ae/am/at` | Avante: ask / chat / edit / model / toggle |
 
-Press `<space>` and pause — LazyVim's which-key menu lists everything.
+Press `F1` any time for the full, live keymap guide. Because the leader is `,`, all
+LazyVim `<space>...` shortcuts move to `,...`.
 
 ## Project structure
 
@@ -119,10 +152,12 @@ Press `<space>` and pause — LazyVim's which-key menu lists everything.
 ├── colors/
 │   └── phantom-thieves.lua  # the theme
 └── lua/
-    ├── config/p5.lua     # shared P5 palette + highlight helpers
+    ├── config/
+    │   ├── p5.lua            # shared P5 palette + highlight helpers
+    │   └── phantom.lua       # sync engine: terminal→explorer/AI, open-in-editor, guide, zones
     └── plugins/
         ├── ai.lua        # opencode panel + editor-aware opencode.nvim + avante
-        ├── layout.lua    # explorer/terminal/layout assembly
+        ├── layout.lua    # explorer/terminal/layout assembly + controller wiring
         ├── persona5.lua  # lualine / noice / bufferline polish
         └── theme.lua     # colorscheme selection
 ```

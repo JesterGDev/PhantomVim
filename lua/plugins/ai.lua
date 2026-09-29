@@ -28,7 +28,7 @@ local function opencode_toggle()
       position = "right",
       width = 0.42,
       relative = "editor",
-      wo = { winbar = "%#P5Title# OPENCODE %#P5TitleBar#│ REPLICATING HEARTS %*" },
+      wo = { winbar = "%{%v:lua.require('config.phantom').winbar()%}" },
     },
   })
   vim.defer_fn(function()
@@ -38,6 +38,10 @@ local function opencode_toggle()
     end
   end, 60)
 end
+
+-- expose a :OpenCodeToggle command so the phantom zone layer (config/phantom)
+-- can focus/open the AI panel the same way the <leader>oa key does.
+vim.api.nvim_create_user_command("OpenCodeToggle", opencode_toggle, {})
 
 return {
   { import = "lazyvim.plugins.extras.ai.avante" },

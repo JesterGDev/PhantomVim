@@ -1,7 +1,10 @@
--- Cursor-style IDE layout: file explorer (left) + terminal (bottom) + code (center).
--- The opencode AI panel on the right is toggled with <leader>oa (see plugins/ai.lua).
+-- PhantomVim IDE layout: file explorer (left) + code (center) + AI (right).
+-- The BOTTOM terminal is the controller (see lua/config/phantom.lua): the
+-- explorer and the AI panel follow its PWD, and `n <file>` / `nvim <file>`
+-- open in the editor above instead of nesting a second editor.
 
 local p5 = require("config.p5")
+local phantom = require("config.phantom")
 
 local restored = false
 local laid_out = false
@@ -24,17 +27,6 @@ local function open_tree()
   end
 end
 
-local function open_terminal()
-  require("snacks").terminal.get(nil, {
-    win = {
-      position = "bottom",
-      height = 0.28,
-      relative = "editor",
-      wo = { winbar = "%#P5TitleGold# TERMINAL %#P5TitleBar#│ ALL-OUT ATTACK READY %*" },
-    },
-  })
-end
-
 local function main_buffer()
   local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
   local name = vim.api.nvim_buf_get_name(0)
@@ -43,27 +35,6 @@ local function main_buffer()
     return true
   end
   return false
-end
-
-local function paint_splash()
-  local lines = {
-    { text = "", hl = nil },
-    { text = "▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓", hl = "P5BannerDim" },
-    { text = "", hl = nil },
-    { text = "PHANTOM·THIEVES // CODING LEAP", hl = "P5BannerTitle" },
-    { text = "GIMME YOUR CODE", hl = "P5BannerGold" },
-    { text = "", hl = nil },
-    { text = "▸ <space> e      EXPLORER", hl = "P5BannerDim" },
-    { text = "▸ <space> oa     OPENCODE AI", hl = "P5BannerDim" },
-    { text = "▸ <space> ot     TERMINAL", hl = "P5BannerDim" },
-    { text = "▸ <space> aa     AVANTE", hl = "P5BannerDim" },
-    { text = "▸ <space> ac     AVANTE CHAT", hl = "P5BannerDim" },
-    { text = "▸ <space> am     SELECT MODEL", hl = "P5BannerDim" },
-    { text = "▸ <space> ol     REASSEMBLE LAYOUT", hl = "P5BannerDim" },
-    { text = "", hl = nil },
-    { text = "▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓", hl = "P5BannerDim" },
-  }
-  p5.paint_banner(0, lines)
 end
 
 local function started_fresh()
@@ -85,25 +56,58 @@ local function apply_ide_layout()
   vim.schedule(function()
     pcall(open_tree)
     if started_fresh() then
-      pcall(open_terminal)
+      pcall(phantom.terminal_toggle)
     end
-    -- stick the code viewer in the middle
-    if vim.api.nvim_win_is_valid(main_win) then
-      vim.api.nvim_set_current_win(main_win)
+    -- the controller terminal gets the focus on a fresh start
+    local fresh = started_fresh()
+    if fresh then
+      local term_wins = phantom.zone_windows("terminal")
+      if #term_wins > 0 and vim.api.nvim_win_is_valid(term_wins[#term_wins]) then
+        vim.api.nvim_set_current_win(term_wins[#term_wins])
+      end
+    else
+      -- stick the code viewer in the middle
+      if vim.api.nvim_win_is_valid(main_win) then
+        vim.api.nvim_set_current_win(main_win)
+      end
     end
-    if started_fresh() and main_buffer() then
-      paint_splash()
+    if fresh and main_buffer() then
+      phantom.show_guide()
     end
+    -- every window renders its own P5 winbar (path / zone)
+    vim.o.winbar = "%{%v:lua.require('config.phantom').winbar()%}"
   end)
 end
 
 vim.api.nvim_create_autocmd("User", {
   pattern = "VeryLazy",
-  callback = apply_ide_layout,
+  callback = function()
+    apply_ide_layout()
+  end,
+})
+
+-- The plugins/ import is assembled lazily (after VimEnter / UIEnter), so the
+-- sync engine, keymap layer and guide-recovery are scheduled straight from the
+-- module scope. Everything here is idempotent, so it also runs under the
+-- VeryLazy chain in a GUI without double-starting.
+vim.schedule(function()
+  phantom.setup_keymaps()
+  phantom.start()
+end)
+
+vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout", "BufEnter" }, {
+  callback = function()
+    vim.schedule(phantom.maybe_show_guide_on_empty)
+  end,
+})
+vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout", "BufEnter" }, {
+  callback = function()
+    vim.schedule(phantom.maybe_show_guide_on_empty)
+  end,
 })
 
 return {
-  -- file explorer pinned to the left edge
+  -- file explorer pinned to the left edge, follows the controller's location
   {
     "nvim-neo-tree/neo-tree.nvim",
     opts = function(_, opts)
@@ -111,27 +115,29 @@ return {
         position = "left",
         width = 34,
       })
+      opts.filesystem = vim.tbl_deep_extend("force", opts.filesystem or {}, {
+        follow_current_file = { enabled = true, leave_dirs_open = false },
+        use_libuv_file_watcher = true,
+      })
     end,
   },
 
+  -- snacks powers the panes; the stock LazyVim dashboard is replaced by the
+  -- PhantomVim Guide as the default screen, so disable it here.
   {
     "folke/snacks.nvim",
     keys = {
       {
         "<leader>ot",
-        function()
-          require("snacks").terminal.toggle(nil, {
-            win = {
-              position = "bottom",
-              height = 0.28,
-              relative = "editor",
-              wo = { winbar = "%#P5TitleGold# TERMINAL %#P5TitleBar#│ ALL-OUT ATTACK READY %*" },
-            },
-          })
-        end,
-        desc = "Terminal (bottom panel)",
+        phantom.terminal_toggle,
+        desc = "Terminal (controller, bottom)",
       },
       { "<leader>ol", apply_ide_layout, desc = "Reassemble IDE layout" },
     },
+    opts = function(_, opts)
+      opts = opts or {}
+      opts.dashboard = vim.tbl_deep_extend("force", opts.dashboard or {}, { enabled = false })
+      return opts
+    end,
   },
 }
